@@ -3,16 +3,25 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import AwareDatetime
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import joinedload
 
-from app.api.deps import CurrentUser, DbSession, Paging, apply_update, delete_owned, get_owned
+from app.api.deps import (
+    CurrentUser,
+    DbSession,
+    Paging,
+    apply_update,
+    delete_owned,
+    get_owned,
+    is_admin,
+)
 from app.models import Course, Task, TaskPriority, TaskStatus, TaskType
+from app.schemas.errors import ERROR_RESPONSES, ApiResponse, PaginatedResponse, ok, ok_list
 from app.schemas.planner import AITaskPrioritizationResult, TaskCreate, TaskRead, TaskUpdate
 from app.services import monitoring
 from app.services.ai_client import generate_structured
 
-router = APIRouter(prefix="/tasks", tags=["Tasks"])
+router = APIRouter(prefix="/tasks", tags=["Tasks"], responses=ERROR_RESPONSES)
 
 PRIORITIZE_PROMPT = (
     "You are an academic advisor. Rank all pending tasks from 1 (highest priority) to N based on: "
@@ -32,12 +41,17 @@ def _sync_completed_at(task: Task) -> None:
         task.completed_at = None
 
 
-@router.get("", response_model=list[TaskRead], summary="List / filter / search tasks (FR-11)")
+@router.get(
+    "",
+    response_model=PaginatedResponse[TaskRead],
+    summary="List / filter / search tasks (FR-11)",
+)
 async def list_tasks(
     user: CurrentUser,
     db: DbSession,
     page: Paging,
     course_id: int | None = None,
+    user_id: int | None = Query(None, description="Admin only: filter by owner user_id"),
     semester: str | None = None,
     type_: TaskType | None = Query(None, alias="type"),
     status_: TaskStatus | None = Query(None, alias="status"),
@@ -45,8 +59,13 @@ async def list_tasks(
     due_from: AwareDatetime | None = None,
     due_to: AwareDatetime | None = None,
     q: str | None = Query(None, max_length=100, description="Case-insensitive title search"),
-) -> list[Task]:
-    stmt = select(Task).where(Task.user_id == user.id)
+) -> dict:
+    stmt = select(Task)
+    if not is_admin(user):
+        stmt = stmt.where(Task.user_id == user.id)
+    elif user_id is not None:
+        stmt = stmt.where(Task.user_id == user_id)
+
     if semester:
         stmt = stmt.join(Task.course).where(Course.semester == semester)
     if course_id is not None:
@@ -63,34 +82,43 @@ async def list_tasks(
         stmt = stmt.where(Task.due_date <= due_to)
     if q:
         stmt = stmt.where(Task.title.icontains(q, autoescape=True))
-    stmt = (
-        stmt.order_by(Task.priority_rank.asc().nulls_last(), Task.due_date, Task.id)
-        .limit(page.limit)
-        .offset(page.offset)
+
+    total = await db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    items = list(
+        await db.scalars(
+            stmt.order_by(Task.priority_rank.asc().nulls_last(), Task.due_date, Task.id)
+            .limit(page.limit)
+            .offset(page.offset)
+        )
     )
-    return list(await db.scalars(stmt))
+    return ok_list(items, total, page.page, page.per_page, "Tasks retrieved successfully.")
 
 
-@router.post("", response_model=TaskRead, status_code=status.HTTP_201_CREATED)
-async def create_task(body: TaskCreate, user: CurrentUser, db: DbSession) -> Task:
-    await get_owned(db, Course, body.course_id, user.id)  # can't attach tasks to others' courses
-    task = Task(**body.model_dump(), user_id=user.id)
+@router.post(
+    "",
+    response_model=ApiResponse[TaskRead],
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a new academic task",
+)
+async def create_task(body: TaskCreate, user: CurrentUser, db: DbSession) -> dict:
+    course = await get_owned(db, Course, body.course_id, user)
+    task = Task(**body.model_dump(), user_id=course.user_id)
     _sync_completed_at(task)
     db.add(task)
     await db.commit()
-    return task
+    return ok(task, "Task created successfully.")
 
 
 @router.post(
     "/prioritize",
-    response_model=list[TaskRead],
+    response_model=ApiResponse[list[TaskRead]],
     summary="Prioritize pending tasks with AI recommendations (FR-07)",
 )
 async def prioritize_tasks(
     user: CurrentUser,
     db: DbSession,
     semester: str | None = None,
-) -> list[Task]:
+) -> dict:
     stmt = (
         select(Task)
         .join(Task.course)
@@ -102,7 +130,7 @@ async def prioritize_tasks(
     stmt = stmt.order_by(Task.due_date, Task.id).limit(100)
     tasks = list((await db.scalars(stmt)).unique())
     if not tasks:
-        return []
+        return ok([], "No pending tasks to prioritize.")
 
     payload = json.dumps(
         {
@@ -170,25 +198,59 @@ async def prioritize_tasks(
         details=f"Ranked and prioritized {len(tasks)} tasks",
     )
 
-    return sorted(tasks, key=lambda t: (t.priority_rank is None, t.priority_rank or 0, t.due_date))
+    ranked = sorted(tasks, key=lambda t: (t.priority_rank is None, t.priority_rank or 0, t.due_date))
+    return ok(ranked, "Tasks prioritized successfully.")
 
 
-@router.get("/{task_id}", response_model=TaskRead)
-async def get_task(task_id: int, user: CurrentUser, db: DbSession) -> Task:
-    return await get_owned(db, Task, task_id, user.id)
+@router.get(
+    "/{task_id}",
+    response_model=ApiResponse[TaskRead],
+    summary="Get a single task by ID",
+)
+async def get_task(task_id: int, user: CurrentUser, db: DbSession) -> dict:
+    task = await get_owned(db, Task, task_id, user)
+    return ok(task, "Task retrieved successfully.")
 
 
-@router.patch("/{task_id}", response_model=TaskRead)
-async def update_task(task_id: int, body: TaskUpdate, user: CurrentUser, db: DbSession) -> Task:
-    task = await get_owned(db, Task, task_id, user.id)
+@router.put(
+    "/{task_id}",
+    response_model=ApiResponse[TaskRead],
+    summary="Replace an existing task",
+)
+async def replace_task(task_id: int, body: TaskCreate, user: CurrentUser, db: DbSession) -> dict:
+    task = await get_owned(db, Task, task_id, user)
+    if body.course_id != task.course_id:
+        course = await get_owned(db, Course, body.course_id, user)
+        task.user_id = course.user_id
+    for field, value in body.model_dump().items():
+        setattr(task, field, value)
+    _sync_completed_at(task)
+    await db.commit()
+    return ok(task, "Task updated successfully.")
+
+
+@router.patch(
+    "/{task_id}",
+    response_model=ApiResponse[TaskRead],
+    summary="Partially update an existing task",
+)
+async def update_task(task_id: int, body: TaskUpdate, user: CurrentUser, db: DbSession) -> dict:
+    task = await get_owned(db, Task, task_id, user)
     if body.course_id is not None and body.course_id != task.course_id:
-        await get_owned(db, Course, body.course_id, user.id)
+        course = await get_owned(db, Course, body.course_id, user)
+        task.user_id = course.user_id
     apply_update(task, body, nullable=frozenset({"description"}))
     _sync_completed_at(task)
     await db.commit()
-    return task
+    return ok(task, "Task updated successfully.")
 
 
-@router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_task(task_id: int, user: CurrentUser, db: DbSession) -> None:
-    await delete_owned(db, Task, task_id, user.id)
+@router.delete(
+    "/{task_id}",
+    response_model=ApiResponse[None],
+    status_code=status.HTTP_200_OK,
+    summary="Delete a task",
+)
+async def delete_task(task_id: int, user: CurrentUser, db: DbSession) -> dict:
+    await delete_owned(db, Task, task_id, user)
+    return ok(None, "Task deleted successfully.")

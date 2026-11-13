@@ -51,3 +51,12 @@ def ok_list(data: list[T], total: int, page: int, per_page: int, message: str) -
         "data": data,
         "meta": {"total": total, "page": page, "perPage": per_page},
     }
+
+
+ERROR_RESPONSES: dict[int | str, dict] = {
+    400: {"model": ErrorResponse, "description": "Invalid input or validation error"},
+    401: {"model": ErrorResponse, "description": "Missing or invalid bearer token"},
+    403: {"model": ErrorResponse, "description": "Insufficient permissions for resource"},
+    404: {"model": ErrorResponse, "description": "Resource not found"},
+    409: {"model": ErrorResponse, "description": "Conflict with existing data"},
+}
