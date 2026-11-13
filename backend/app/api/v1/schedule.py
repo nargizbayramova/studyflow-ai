@@ -5,8 +5,9 @@ from fastapi import APIRouter, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload, selectinload
 
-from app.api.deps import CurrentUser, DbSession, Paging
+from app.api.deps import CurrentUser, DbSession, Paging, is_admin
 from app.models import AvailabilitySlot, BlockStatus, Course, SlotKind, StudyBlock, Task, TaskStatus, TaskType
+from app.schemas.errors import ERROR_RESPONSES, ApiResponse, ok
 from app.schemas.schedule import (
     BlockStatusUpdate,
     ScheduleResponse,
@@ -24,16 +25,16 @@ from app.services.scheduler import (
 
 __all__ = ["router", "_parse_block_datetimes", "generate_structured"]
 
-router = APIRouter(prefix="/schedule", tags=["Schedule"])
+router = APIRouter(prefix="/schedule", tags=["Schedule"], responses=ERROR_RESPONSES)
 
 
-@router.get("", response_model=ScheduleResponse, summary="Get current study schedule (FR-06)")
+@router.get("", response_model=ApiResponse[ScheduleResponse], summary="Get current study schedule (FR-06)")
 async def get_schedule(
     user: CurrentUser,
     db: DbSession,
     page: Paging,
     semester: str | None = None,
-) -> ScheduleResponse:
+) -> dict:
     stmt = (
         select(StudyBlock)
         .options(joinedload(StudyBlock.task).joinedload(Task.course))
@@ -43,15 +44,16 @@ async def get_schedule(
         stmt = stmt.join(StudyBlock.task).join(Task.course).where(Course.semester == semester)
     stmt = stmt.order_by(StudyBlock.start_at, StudyBlock.id).limit(page.limit).offset(page.offset)
     blocks = list((await db.scalars(stmt)).unique())
-    return ScheduleResponse(
+    payload = ScheduleResponse(
         study_blocks=[to_study_block_out(b, b.task) for b in blocks if b.task],
         overload_warning=False,
     )
+    return ok(payload, "Study schedule retrieved successfully.")
 
 
 @router.patch(
     "/blocks/{block_id}/status",
-    response_model=StudyBlockOut,
+    response_model=ApiResponse[StudyBlockOut],
     summary="Update a study block status to pending/planned, completed, or missed (FR-08, FR-10)",
 )
 async def update_block_status(
@@ -59,26 +61,31 @@ async def update_block_status(
     body: BlockStatusUpdate,
     user: CurrentUser,
     db: DbSession,
-) -> StudyBlockOut:
+) -> dict:
     stmt = (
         select(StudyBlock)
         .options(joinedload(StudyBlock.task).joinedload(Task.course))
-        .where(StudyBlock.id == block_id, StudyBlock.user_id == user.id)
+        .where(StudyBlock.id == block_id)
     )
     block = (await db.scalars(stmt)).unique().first()
     if block is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "StudyBlock not found")
+    if not is_admin(user) and block.user_id != user.id:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "You do not have permission to access this StudyBlock",
+        )
 
     block.status = (
         BlockStatus.PLANNED if body.status in ("pending", "planned") else BlockStatus(body.status)
     )
     await db.commit()
-    return to_study_block_out(block, block.task)
+    return ok(to_study_block_out(block, block.task), "Study block status updated successfully.")
 
 
 @router.post(
     "/generate",
-    response_model=ScheduleResponse,
+    response_model=ApiResponse[ScheduleResponse],
     summary="Generate AI-powered dynamic study schedule (FR-06)",
 )
 async def generate_schedule(
@@ -86,15 +93,16 @@ async def generate_schedule(
     db: DbSession,
     semester: str | None = None,
     tz: Annotated[str, Query(max_length=64, description="IANA timezone, e.g. Asia/Baku")] = "UTC",
-) -> ScheduleResponse:
-    return await run_ai_schedule(
+) -> dict:
+    result = await run_ai_schedule(
         db, user.id, semester, tz, rebalance=False, generate_fn=generate_structured
     )
+    return ok(result, "Study schedule generated successfully.")
 
 
 @router.post(
     "/rebalance",
-    response_model=ScheduleResponse,
+    response_model=ApiResponse[ScheduleResponse],
     summary="Dynamically rebalance study schedule around missed sessions and remaining effort (FR-08)",
 )
 async def rebalance_schedule(
@@ -102,10 +110,11 @@ async def rebalance_schedule(
     db: DbSession,
     semester: str | None = None,
     tz: Annotated[str, Query(max_length=64, description="IANA timezone, e.g. Asia/Baku")] = "UTC",
-) -> ScheduleResponse:
-    return await run_ai_schedule(
+) -> dict:
+    result = await run_ai_schedule(
         db, user.id, semester, tz, rebalance=True, generate_fn=generate_structured
     )
+    return ok(result, "Study schedule rebalanced successfully.")
 
 
 def _ics_escape(text: str) -> str:
@@ -326,14 +335,14 @@ def _build_workload_analytics(
 
 @router.get(
     "/analytics",
-    response_model=WorkloadAnalyticsResponse,
+    response_model=ApiResponse[WorkloadAnalyticsResponse],
     summary="Visual workload analytics: planned vs. actual hours & high-stress week warnings (FR-14)",
 )
 async def get_workload_analytics(
     user: CurrentUser,
     db: DbSession,
     semester: str | None = None,
-) -> WorkloadAnalyticsResponse:
+) -> dict:
     tasks_stmt = select(Task).where(Task.user_id == user.id)
     blocks_stmt = select(StudyBlock).where(StudyBlock.user_id == user.id)
     if semester:
@@ -347,4 +356,5 @@ async def get_workload_analytics(
     blocks = list(await db.scalars(blocks_stmt.limit(500)))
     slots = list(await db.scalars(slots_stmt.limit(200)))
 
-    return _build_workload_analytics(tasks, blocks, slots)
+    analytics = _build_workload_analytics(tasks, blocks, slots)
+    return ok(analytics, "Workload analytics retrieved successfully.")
