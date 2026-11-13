@@ -1,12 +1,22 @@
 from datetime import date, time
-from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import select
 
-from app.api.deps import CurrentUser, DbSession, Paging, apply_update, delete_owned, get_owned
+from fastapi import APIRouter, HTTPException, Query, status
+from sqlalchemy import func, select
+
+from app.api.deps import (
+    CurrentUser,
+    DbSession,
+    Paging,
+    apply_update,
+    delete_owned,
+    get_owned,
+    is_admin,
+)
 from app.models import AvailabilitySlot, SlotKind
+from app.schemas.errors import ERROR_RESPONSES, ApiResponse, PaginatedResponse, ok, ok_list
 from app.schemas.planner import SlotCreate, SlotRead, SlotUpdate
 
-router = APIRouter(prefix="/availability", tags=["Schedule"])
+router = APIRouter(prefix="/availability", tags=["Schedule"], responses=ERROR_RESPONSES)
 
 
 async def _assert_no_overlapping_slots(
@@ -43,42 +53,87 @@ async def _assert_no_overlapping_slots(
             )
 
 
-@router.get("", response_model=list[SlotRead], summary="Weekly available / blocked slots (FR-05)")
-async def list_slots(user: CurrentUser, db: DbSession, page: Paging) -> list[AvailabilitySlot]:
-    q = (
-        select(AvailabilitySlot)
-        .where(AvailabilitySlot.user_id == user.id)
-        .order_by(AvailabilitySlot.day_of_week, AvailabilitySlot.start_time)
-        .limit(page.limit).offset(page.offset)
+@router.get(
+    "",
+    response_model=PaginatedResponse[SlotRead],
+    summary="Weekly available / blocked slots (FR-05)",
+)
+async def list_slots(
+    user: CurrentUser,
+    db: DbSession,
+    page: Paging,
+    user_id: int | None = Query(None, description="Admin only: filter by owner user_id"),
+) -> dict:
+    q = select(AvailabilitySlot)
+    if not is_admin(user):
+        q = q.where(AvailabilitySlot.user_id == user.id)
+    elif user_id is not None:
+        q = q.where(AvailabilitySlot.user_id == user_id)
+
+    total = await db.scalar(select(func.count()).select_from(q.subquery())) or 0
+    items = list(
+        await db.scalars(
+            q.order_by(AvailabilitySlot.day_of_week, AvailabilitySlot.start_time)
+            .limit(page.limit)
+            .offset(page.offset)
+        )
     )
-    return list(await db.scalars(q))
+    return ok_list(items, total, page.page, page.per_page, "Availability slots retrieved successfully.")
 
 
-@router.post("", response_model=SlotRead, status_code=status.HTTP_201_CREATED)
-async def create_slot(body: SlotCreate, user: CurrentUser, db: DbSession) -> AvailabilitySlot:
+@router.post(
+    "",
+    response_model=ApiResponse[SlotRead],
+    status_code=status.HTTP_201_CREATED,
+    summary="Create an availability slot",
+)
+async def create_slot(body: SlotCreate, user: CurrentUser, db: DbSession) -> dict:
     await _assert_no_overlapping_slots(
         db, user.id, body.day_of_week, body.specific_date, body.start_time, body.end_time
     )
     slot = AvailabilitySlot(**body.model_dump(), user_id=user.id)
     db.add(slot)
     await db.commit()
-    return slot
+    return ok(slot, "Availability slot created successfully.")
 
 
-@router.get("/{slot_id}", response_model=SlotRead)
-async def get_slot(slot_id: int, user: CurrentUser, db: DbSession) -> AvailabilitySlot:
-    return await get_owned(db, AvailabilitySlot, slot_id, user.id)
+@router.get("/{slot_id}", response_model=ApiResponse[SlotRead], summary="Get an availability slot")
+async def get_slot(slot_id: int, user: CurrentUser, db: DbSession) -> dict:
+    slot = await get_owned(db, AvailabilitySlot, slot_id, user)
+    return ok(slot, "Availability slot retrieved successfully.")
 
 
-@router.patch("/{slot_id}", response_model=SlotRead)
+@router.put(
+    "/{slot_id}",
+    response_model=ApiResponse[SlotRead],
+    summary="Replace an availability slot",
+)
+async def replace_slot(
+    slot_id: int, body: SlotCreate, user: CurrentUser, db: DbSession
+) -> dict:
+    slot = await get_owned(db, AvailabilitySlot, slot_id, user)
+    await _assert_no_overlapping_slots(
+        db, slot.user_id, body.day_of_week, body.specific_date, body.start_time, body.end_time, exclude_slot_id=slot.id
+    )
+    for field, value in body.model_dump().items():
+        setattr(slot, field, value)
+    await db.commit()
+    return ok(slot, "Availability slot updated successfully.")
+
+
+@router.patch(
+    "/{slot_id}",
+    response_model=ApiResponse[SlotRead],
+    summary="Partially update an availability slot",
+)
 async def update_slot(
     slot_id: int, body: SlotUpdate, user: CurrentUser, db: DbSession
-) -> AvailabilitySlot:
-    slot = await get_owned(db, AvailabilitySlot, slot_id, user.id)
+) -> dict:
+    slot = await get_owned(db, AvailabilitySlot, slot_id, user)
     new_start = body.start_time if body.start_time is not None else slot.start_time
     new_end = body.end_time if body.end_time is not None else slot.end_time
     if new_end <= new_start:
-        raise HTTPException(422, "end_time must be after start_time")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "end_time must be after start_time")
 
     new_date = body.specific_date if "specific_date" in body.model_fields_set else slot.specific_date
     new_dow = (
@@ -88,15 +143,21 @@ async def update_slot(
     )
 
     await _assert_no_overlapping_slots(
-        db, user.id, new_dow, new_date, new_start, new_end, exclude_slot_id=slot.id
+        db, slot.user_id, new_dow, new_date, new_start, new_end, exclude_slot_id=slot.id
     )
 
     apply_update(slot, body, nullable=frozenset({"specific_date"}))
     slot.day_of_week = new_dow
     await db.commit()
-    return slot
+    return ok(slot, "Availability slot updated successfully.")
 
 
-@router.delete("/{slot_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_slot(slot_id: int, user: CurrentUser, db: DbSession) -> None:
-    await delete_owned(db, AvailabilitySlot, slot_id, user.id)
+@router.delete(
+    "/{slot_id}",
+    response_model=ApiResponse[None],
+    status_code=status.HTTP_200_OK,
+    summary="Delete an availability slot",
+)
+async def delete_slot(slot_id: int, user: CurrentUser, db: DbSession) -> dict:
+    await delete_owned(db, AvailabilitySlot, slot_id, user)
+    return ok(None, "Availability slot deleted successfully.")
