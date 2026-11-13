@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime, timezone, timedelta, time
 from sqlalchemy import select
 from app.core.database import SessionLocal
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.models.course import Course
 from app.models.task import Task, TaskType, TaskStatus, TaskPriority
 from app.models.study_block import StudyBlock, BlockStatus
@@ -378,6 +378,83 @@ async def seed_data():
 
         await db.commit()
         print("All realistic data seeded successfully!")
+
+        await _seed_rbac_demo_accounts(db)
+
+
+async def _ensure_rbac_user(db, email: str, full_name: str, role: UserRole) -> User:
+    from app.core.security import hash_password
+
+    user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    if user is None:
+        user = User(
+            email=email,
+            hashed_password=hash_password("password123"),
+            full_name=full_name,
+            role=role,
+            is_active=True,
+        )
+        db.add(user)
+        await db.flush()
+    elif user.role != role:
+        user.role = role
+    return user
+
+
+async def _seed_rbac_demo_accounts(db) -> None:
+    """Ensure User A, User B, and Admin exist with sample tasks for RBAC testing."""
+    user_a = await _ensure_rbac_user(db, "usera@studyflow.edu", "User A (Student)", UserRole.USER)
+    user_b = await _ensure_rbac_user(db, "userb@studyflow.edu", "User B (Student)", UserRole.USER)
+    await _ensure_rbac_user(db, "admin@studyflow.edu", "System Administrator", UserRole.ADMIN)
+
+    now_dt = datetime.now(timezone.utc)
+    samples = [
+        (user_a, "CS 101", "Intro to Software Engineering", "Homework 1: REST API Design", 2),
+        (user_a, "MATH 101", "Discrete Mathematics", "Problem Set 3: Graph Theory", 4),
+        (user_b, "BIO 101", "General Biology", "Lab Report 2: Cellular Respiration", 3),
+        (user_b, "HIST 202", "Modern World History", "Midterm Essay Outline", 5),
+    ]
+    for owner, code, course_title, task_title, due_days in samples:
+        course = (
+            await db.execute(
+                select(Course).where(
+                    Course.user_id == owner.id, Course.code == code, Course.semester == "Fall 2026"
+                )
+            )
+        ).scalar_one_or_none()
+        if course is None:
+            course = Course(
+                user_id=owner.id,
+                code=code,
+                title=course_title,
+                semester="Fall 2026",
+                color="#5553B7",
+            )
+            db.add(course)
+            await db.flush()
+
+        existing_task = (
+            await db.execute(
+                select(Task).where(Task.user_id == owner.id, Task.title == task_title)
+            )
+        ).scalar_one_or_none()
+        if existing_task is None:
+            db.add(
+                Task(
+                    user_id=owner.id,
+                    course_id=course.id,
+                    title=task_title,
+                    type=TaskType.ASSIGNMENT,
+                    status=TaskStatus.PENDING,
+                    priority=TaskPriority.MEDIUM,
+                    due_date=now_dt + timedelta(days=due_days),
+                    estimated_hours=2.0,
+                    weight_percent=10.0,
+                )
+            )
+
+    await db.commit()
+    print("Seeded RBAC demo accounts (usera@studyflow.edu, userb@studyflow.edu, admin@studyflow.edu / password123).")
 
 if __name__ == "__main__":
     asyncio.run(seed_data())

@@ -2,7 +2,6 @@ import html
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
-from fastapi.routing import APIRoute
 
 from app.core.config import settings
 
@@ -44,23 +43,19 @@ def _method_badge_class(method: str) -> str:
 )
 async def greeting(request: Request) -> HTMLResponse:
     rows: list[str] = []
-    api_routes = [
-        r
-        for r in request.app.routes
-        if isinstance(r, APIRoute) and r.path.startswith(settings.API_V1_PREFIX)
-    ]
-    api_routes.sort(key=lambda r: r.path)
-
-    for route in api_routes:
-        methods = sorted(m for m in (route.methods or set()) if m not in ("HEAD", "OPTIONS"))
-        desc = html.escape(route.summary or route.name.replace("_", " ").capitalize())
-        path = html.escape(route.path)
-        for method in methods:
-            cls = _method_badge_class(method)
+    paths = request.app.openapi().get("paths", {})
+    for path in sorted(p for p in paths if p.startswith(settings.API_V1_PREFIX)):
+        ops = paths[path]
+        for method in ("get", "post", "put", "patch", "delete"):
+            if method not in ops:
+                continue
+            op = ops[method]
+            desc = html.escape(op.get("summary") or op.get("operationId", ""))
+            cls = _method_badge_class(method.upper())
             rows.append(
                 f"<tr>"
-                f'<td><span class="badge {cls}">{html.escape(method)}</span></td>'
-                f'<td class="mono">{path}</td>'
+                f'<td><span class="badge {cls}">{method.upper()}</span></td>'
+                f'<td class="mono">{html.escape(path)}</td>'
                 f"<td>{desc}</td>"
                 f"</tr>"
             )

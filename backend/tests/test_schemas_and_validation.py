@@ -132,17 +132,22 @@ def test_routes_registered():
     assert "/api/v1/auth/me" in paths
     assert "/api/v1/courses" in paths
     assert "/api/v1/courses/{course_id}" in paths
+    assert "put" in paths["/api/v1/courses/{course_id}"]
     assert "delete" in paths["/api/v1/courses/{course_id}"]
     assert "/api/v1/tasks" in paths
     assert "/api/v1/tasks/{task_id}" in paths
+    assert "put" in paths["/api/v1/tasks/{task_id}"]
     assert "/api/v1/availability" in paths
     assert "/api/v1/availability/{slot_id}" in paths
+    assert "put" in paths["/api/v1/availability/{slot_id}"]
     assert "patch" in paths["/api/v1/availability/{slot_id}"]
     assert "/api/v1/study-blocks" in paths
     assert "/api/v1/study-blocks/{block_id}" in paths
+    assert "put" in paths["/api/v1/study-blocks/{block_id}"]
     assert "patch" in paths["/api/v1/study-blocks/{block_id}"]
     assert "delete" in paths["/api/v1/study-blocks/{block_id}"]
     assert "/api/v1/health" in paths
+    assert "/api/v1/greeting" in paths
 
 
 def test_cors_origins_sanitization():
@@ -277,9 +282,11 @@ async def test_generate_schedule_endpoint(monkeypatch):
 
     mock_user = MagicMock(id=7)
     res = await schedule_api.generate_schedule(user=mock_user, db=mock_db, semester="Fall 2026")
-    assert res.overload_warning is True
-    assert len(res.study_blocks) == 1
-    out = res.study_blocks[0]
+    assert res["success"] is True
+    data = res["data"]
+    assert data.overload_warning is True
+    assert len(data.study_blocks) == 1
+    out = data.study_blocks[0]
     assert out.id == 99
     assert out.task_id == 42
     assert out.task_title == "Midterm Prep"
@@ -347,11 +354,12 @@ async def test_generate_schedule_rejects_blocked_or_outside_slots(monkeypatch):
 
     mock_user = MagicMock(id=1)
     res = await schedule_api.generate_schedule(user=mock_user, db=mock_db)
+    data = res["data"]
     # Only 1 block should be accepted, and overload_warning set to True because 2 were rejected!
-    assert len(res.study_blocks) == 1
-    assert res.study_blocks[0].start_time == "09:00"
-    assert res.study_blocks[0].end_time == "10:00"
-    assert res.overload_warning is True
+    assert len(data.study_blocks) == 1
+    assert data.study_blocks[0].start_time == "09:00"
+    assert data.study_blocks[0].end_time == "10:00"
+    assert data.overload_warning is True
 
 
 def test_parse_block_datetimes_uses_user_timezone():
@@ -368,23 +376,47 @@ def test_structured_error_responses():
     from starlette.testclient import TestClient
 
     client = TestClient(app)
-    # 1. 404 Not Found returns structured error
+    # 1. 404 Not Found returns assignment error envelope
     res_404 = client.get("/api/v1/nonexistent-endpoint")
     assert res_404.status_code == 404
     body_404 = res_404.json()
-    assert body_404["error_code"] == "NOT_FOUND"
-    assert body_404["status_code"] == 404
-    assert "detail" in body_404
+    assert body_404["success"] is False
+    assert body_404["error"]["code"] == "NOT_FOUND"
+    assert "message" in body_404["error"]
+    assert "details" not in body_404["error"]
 
-    # 2. 422 Validation Error returns field_errors and structured error
-    res_422 = client.post("/api/v1/auth/login", json={})
-    assert res_422.status_code == 422
-    body_422 = res_422.json()
-    assert body_422["error_code"] == "VALIDATION_ERROR"
-    assert body_422["status_code"] == 422
-    assert "field_errors" in body_422
-    assert len(body_422["field_errors"]) > 0
-    assert any(f["field"] == "username" for f in body_422["field_errors"])
+    # 2. 400 Validation Error returns error.details and VALIDATION_ERROR
+    res_400 = client.post("/api/v1/auth/login", json={})
+    assert res_400.status_code == 400
+    body_400 = res_400.json()
+    assert body_400["success"] is False
+    assert body_400["error"]["code"] == "VALIDATION_ERROR"
+    assert len(body_400["error"]["details"]) > 0
+    assert any(f["field"] == "username" for f in body_400["error"]["details"])
+
+    # 3. Unknown extra fields are rejected
+    res_extra = client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "student@example.com",
+            "password": "password123",
+            "full_name": "Test Student",
+            "unexpected_field": True,
+        },
+    )
+    assert res_extra.status_code == 400
+    assert res_extra.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert any("unexpected_field" in f["field"] for f in res_extra.json()["error"]["details"])
+
+    # 4. Missing/invalid token returns 401 Unauthorized envelope
+    res_unauth = client.get("/api/v1/tasks")
+    assert res_unauth.status_code == 401
+    assert res_unauth.json()["success"] is False
+    assert res_unauth.json()["error"]["code"] == "UNAUTHORIZED"
+
+    res_bad_tok = client.get("/api/v1/tasks", headers={"Authorization": "Bearer invalid-token"})
+    assert res_bad_tok.status_code == 401
+    assert res_bad_tok.json()["error"]["code"] == "UNAUTHORIZED"
 
 
 @pytest.mark.anyio
@@ -411,7 +443,8 @@ async def test_prioritize_tasks_endpoint(monkeypatch):
     empty_db = MagicMock()
     empty_db.scalars = AsyncMock(return_value=FakeScalarResult([]))
     empty_res = await tasks_api.prioritize_tasks(user=mock_user, db=empty_db)
-    assert empty_res == []
+    assert empty_res["success"] is True
+    assert empty_res["data"] == []
     ai_mock.assert_not_called()
 
     # Case 2: Ranks pending tasks, runs 1 bulk update, returns sorted by priority_rank ASC
@@ -462,7 +495,9 @@ async def test_prioritize_tasks_endpoint(monkeypatch):
     mock_db.execute = AsyncMock()
     mock_db.commit = AsyncMock()
 
-    ranked = await tasks_api.prioritize_tasks(user=mock_user, db=mock_db, semester="Fall 2026")
+    res = await tasks_api.prioritize_tasks(user=mock_user, db=mock_db, semester="Fall 2026")
+    ranked = res["data"]
+    assert res["success"] is True
     assert [t.id for t in ranked] == [102, 101]
     assert ranked[0].priority_rank == 1
     assert ranked[0].urgency_level == "CRITICAL"
@@ -579,6 +614,7 @@ async def test_rebalance_schedule_preserves_completed_and_recalculates_effort(mo
 
     mock_user = MagicMock(id=9)
     res = await schedule_api.rebalance_schedule(user=mock_user, db=mock_db, semester="Fall 2026")
+    data = res["data"]
 
     # Verify remaining effort calculation: 4.0h estimated - 1.5h completed = 2.5h (missed ignored)
     assert len(captured_payloads) == 1
@@ -588,8 +624,8 @@ async def test_rebalance_schedule_preserves_completed_and_recalculates_effort(mo
 
     # Verify bulk insert called and response includes preserved completed block + new planned block
     mock_db.add_all.assert_called_once()
-    assert len(res.study_blocks) == 2
-    statuses = {b.id: b.status for b in res.study_blocks}
+    assert len(data.study_blocks) == 2
+    statuses = {b.id: b.status for b in data.study_blocks}
     assert statuses[11] == "completed"
     assert statuses[200] == "planned"
 
@@ -835,6 +871,52 @@ def test_workload_analytics_fr14():
     # Week 1 (Next week, Oct 26-Nov 1): 7h remaining exam effort exceeds 6h weekly capacity -> high stress
     assert res.weeks[1].is_high_stress is True
     assert res.high_stress_weeks_count == 1
+
+
+def test_greeting_html_endpoint():
+    from starlette.testclient import TestClient
+
+    client = TestClient(app)
+    res = client.get("/api/v1/greeting")
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("text/html")
+    assert "StudyFlow API" in res.text
+    assert "Nargiz Bayramova" in res.text
+    assert "/api/v1/tasks" in res.text
+    assert "API Running" in res.text
+
+
+@pytest.mark.anyio
+async def test_rbac_ownership_and_admin_access():
+    from unittest.mock import AsyncMock, MagicMock
+    from fastapi import HTTPException
+    from app.api.deps import get_owned
+    from app.models import Task, User, UserRole
+
+    user_a = User(id=1, email="a@test.edu", hashed_password="x", full_name="A", role=UserRole.USER)
+    user_b = User(id=2, email="b@test.edu", hashed_password="x", full_name="B", role=UserRole.USER)
+    admin = User(id=3, email="admin@test.edu", hashed_password="x", full_name="Admin", role=UserRole.ADMIN)
+    task_owned_by_a = MagicMock(id=10, user_id=1)
+
+    db = MagicMock()
+    db.scalar = AsyncMock(return_value=task_owned_by_a)
+
+    # Owner succeeds
+    assert await get_owned(db, Task, 10, user_a) is task_owned_by_a
+
+    # Other regular user gets 403 Forbidden
+    with pytest.raises(HTTPException) as exc_403:
+        await get_owned(db, Task, 10, user_b)
+    assert exc_403.value.status_code == 403
+
+    # Admin accesses any user's resource
+    assert await get_owned(db, Task, 10, admin) is task_owned_by_a
+
+    # Missing resource ID gets 404 Not Found
+    db.scalar = AsyncMock(return_value=None)
+    with pytest.raises(HTTPException) as exc_404:
+        await get_owned(db, Task, 999, user_a)
+    assert exc_404.value.status_code == 404
 
 
 

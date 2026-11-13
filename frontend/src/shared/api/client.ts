@@ -27,6 +27,33 @@ export function extractErrorMessage(data: unknown, fallback: string = "Request f
   if (typeof data === "object") {
     const record = data as Record<string, unknown>;
 
+    // Standard error envelope: { success: false, error: { code, message, details } }
+    if (record.error && typeof record.error === "object") {
+      const errObj = record.error as {
+        message?: string;
+        details?: Array<{ field?: string; message?: string }>;
+      };
+      if (Array.isArray(errObj.details) && errObj.details.length > 0) {
+        const msgs = errObj.details
+          .map((item) => {
+            const rawField = item.field || "";
+            if (rawField && rawField !== "request" && rawField !== "body") {
+              const fieldName = rawField.replace(/_/g, " ");
+              const capitalized = fieldName.charAt(0).toUpperCase() + fieldName.slice(1);
+              return `${capitalized}: ${item.message || "Invalid value"}`;
+            }
+            return item.message || "Invalid value";
+          })
+          .filter(Boolean);
+        if (msgs.length > 0) {
+          return msgs.join("; ");
+        }
+      }
+      if (typeof errObj.message === "string" && errObj.message.trim()) {
+        return errObj.message;
+      }
+    }
+
     // Structured field errors from backend: [{ field: "title", message: "..." }]
     if (Array.isArray(record.field_errors)) {
       const msgs = record.field_errors
@@ -171,7 +198,12 @@ export async function apiClient<T>(endpoint: string, options: RequestOptions = {
     let title: string | undefined;
     if (data && typeof data === "object") {
       const rec = data as Record<string, unknown>;
-      if (typeof rec.error_code === "string" && rec.error_code) {
+      if (rec.error && typeof rec.error === "object") {
+        const errCode = (rec.error as Record<string, unknown>).code;
+        if (typeof errCode === "string" && errCode) {
+          title = formatErrorCode(errCode);
+        }
+      } else if (typeof rec.error_code === "string" && rec.error_code) {
         title = formatErrorCode(rec.error_code);
       }
     }
@@ -196,6 +228,10 @@ export async function apiClient<T>(endpoint: string, options: RequestOptions = {
     }
 
     throw new ApiError(response.status, message, data);
+  }
+
+  if (isJson && data && typeof data === "object" && "success" in data && "data" in data) {
+    return (data as { data: T }).data;
   }
 
   return data as T;
