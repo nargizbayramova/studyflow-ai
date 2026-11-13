@@ -10,17 +10,17 @@ router = APIRouter(tags=["Greeting"])
 TEAM_MEMBERS = [
     {
         "name": "Nargiz Bayramova",
-        "student_id": "TODO-STUDENT-ID",
+        "student_id": "12029",
         "role": "Backend REST API design, PostgreSQL schema modeling, RBAC, and monitoring/Telegram alerts.",
     },
     {
         "name": "Sumaya Gafarova",
-        "student_id": "TODO-STUDENT-ID",
+        "student_id": "18004",
         "role": "Project proposal, requirements engineering, AI scheduling logic, and system architecture.",
     },
     {
         "name": "Maryam Aliyeva",
-        "student_id": "TODO-STUDENT-ID",
+        "student_id": "23162",
         "role": "Frontend UI/UX design, interactive calendar & dashboard, and client-side state workflows.",
     },
 ]
