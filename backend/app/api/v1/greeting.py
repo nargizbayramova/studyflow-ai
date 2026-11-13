@@ -69,6 +69,7 @@ async def greeting(request: Request) -> HTMLResponse:
         for m in TEAM_MEMBERS
     )
 
+    base = html.escape(str(request.base_url).rstrip("/"))
     page = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -161,9 +162,9 @@ async def greeting(request: Request) -> HTMLResponse:
         daily study schedules while protecting against deadline overload.
       </p>
       <div class="links">
-        <a class="btn" href="/docs">Swagger UI (/docs)</a>
-        <a class="btn" href="/redoc">ReDoc (/redoc)</a>
-        <a class="btn" href="/api/v1/openapi.json">OpenAPI Schema</a>
+        <a class="btn" href="{base}/docs">Swagger UI (/docs)</a>
+        <a class="btn" href="{base}/redoc">ReDoc (/redoc)</a>
+        <a class="btn" href="{base}/api/v1/openapi.json">OpenAPI Schema</a>
       </div>
     </section>
 
