@@ -1,6 +1,7 @@
+import enum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, String
+from sqlalchemy import Boolean, Enum, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -12,6 +13,11 @@ if TYPE_CHECKING:
     from app.models.task import Task
 
 
+class UserRole(str, enum.Enum):
+    USER = "user"
+    ADMIN = "admin"
+
+
 class User(TimestampMixin, Base):
     __tablename__ = "users"
 
@@ -19,6 +25,11 @@ class User(TimestampMixin, Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     hashed_password: Mapped[str] = mapped_column(String(255))
     full_name: Mapped[str] = mapped_column(String(120))
+    role: Mapped[UserRole] = mapped_column(
+        Enum(UserRole, name="user_role", native_enum=False, values_callable=lambda x: [m.value for m in x]),
+        default=UserRole.USER,
+        server_default="user",
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
 
     courses: Mapped[list["Course"]] = relationship(

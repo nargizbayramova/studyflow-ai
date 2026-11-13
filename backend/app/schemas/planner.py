@@ -3,7 +3,7 @@ from typing import Annotated
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, EmailStr, Field, model_validator
 
-from app.models import BlockStatus, SlotKind, TaskPriority, TaskStatus, TaskType
+from app.models import BlockStatus, SlotKind, TaskPriority, TaskStatus, TaskType, UserRole
 
 Str = lambda max_len: Annotated[str, Field(min_length=1, max_length=max_len)]  # noqa: E731
 # bcrypt only uses the first 72 bytes; reject longer instead of silently truncating.
@@ -32,6 +32,7 @@ class UserRead(ORM):
     id: int
     email: EmailStr
     full_name: str
+    role: UserRole = UserRole.USER
     created_at: datetime
 
 

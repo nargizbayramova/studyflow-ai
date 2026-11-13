@@ -50,6 +50,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
                     "ON availability_slots (specific_date)"
                 )
             )
+            await conn.execute(
+                text("ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'user'")
+            )
     except Exception:
         logger.debug("Skipped startup schema check for specific_date", exc_info=True)
     await monitoring.start()
