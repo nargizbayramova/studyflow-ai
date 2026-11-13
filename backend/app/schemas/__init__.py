@@ -1,4 +1,11 @@
-from app.schemas.errors import ErrorResponse, FieldError
+from app.schemas.errors import (
+    ApiResponse,
+    ErrorDetail,
+    ErrorResponse,
+    FieldError,
+    PaginatedResponse,
+    PaginationMeta,
+)
 from app.schemas.health import HealthResponse
 from app.schemas.planner import (
     AIPrioritizedTaskItem,
@@ -22,8 +29,12 @@ from app.schemas.planner import (
 )
 
 __all__ = [
+    "ApiResponse",
+    "ErrorDetail",
     "ErrorResponse",
     "FieldError",
+    "PaginatedResponse",
+    "PaginationMeta",
     "HealthResponse",
     "AIPrioritizedTaskItem",
     "AITaskPrioritizationResult",
