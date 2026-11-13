@@ -5,7 +5,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, EmailStr, Field, mode
 
 from app.models import BlockStatus, SlotKind, TaskPriority, TaskStatus, TaskType, UserRole
 
-Str = lambda max_len: Annotated[str, Field(min_length=1, max_length=max_len)]  # noqa: E731
+Str = lambda max_len, min_len=1: Annotated[str, Field(min_length=min_len, max_length=max_len)]  # noqa: E731
 # bcrypt only uses the first 72 bytes; reject longer instead of silently truncating.
 Password = Annotated[str, Field(min_length=8, max_length=72)]
 Color = Annotated[str, Field(pattern=r"^#[0-9A-Fa-f]{6}$")]
@@ -15,16 +15,20 @@ class ORM(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class StrictInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
 # --- Auth / users ---
 
-class UserCreate(BaseModel):
+class UserCreate(StrictInput):
     email: EmailStr
     password: Password
-    full_name: Str(120)
+    full_name: Str(120, 2)
 
 
-class UserUpdate(BaseModel):
-    full_name: Str(120) | None = None
+class UserUpdate(StrictInput):
+    full_name: Str(120, 2) | None = None
     password: Password | None = None
 
 
@@ -43,19 +47,19 @@ class Token(BaseModel):
 
 # --- Courses ---
 
-class CourseCreate(BaseModel):
-    code: Str(20)
-    title: Str(200)
+class CourseCreate(StrictInput):
+    code: Str(20, 2)
+    title: Str(200, 3)
     instructor: Str(120) | None = None
-    semester: Str(30)
+    semester: Str(30, 2)
     color: Color = "#4F46E5"
 
 
-class CourseUpdate(BaseModel):
-    code: Str(20) | None = None
-    title: Str(200) | None = None
+class CourseUpdate(StrictInput):
+    code: Str(20, 2) | None = None
+    title: Str(200, 3) | None = None
     instructor: Str(120) | None = None
-    semester: Str(30) | None = None
+    semester: Str(30, 2) | None = None
     color: Color | None = None
     is_archived: bool | None = None
 
@@ -74,10 +78,10 @@ class CourseRead(ORM):
 
 # --- Tasks ---
 
-class TaskCreate(BaseModel):
-    course_id: int
-    title: Str(200)
-    description: str | None = None
+class TaskCreate(StrictInput):
+    course_id: int = Field(gt=0)
+    title: Str(200, 3)
+    description: Annotated[str, Field(max_length=2000)] | None = None
     type: TaskType = TaskType.ASSIGNMENT
     status: TaskStatus = TaskStatus.PENDING
     priority: TaskPriority = TaskPriority.MEDIUM
@@ -86,10 +90,10 @@ class TaskCreate(BaseModel):
     weight_percent: float = Field(0.0, ge=0, le=100)
 
 
-class TaskUpdate(BaseModel):
-    course_id: int | None = None
-    title: Str(200) | None = None
-    description: str | None = None
+class TaskUpdate(StrictInput):
+    course_id: int | None = Field(None, gt=0)
+    title: Str(200, 3) | None = None
+    description: Annotated[str, Field(max_length=2000)] | None = None
     type: TaskType | None = None
     status: TaskStatus | None = None
     priority: TaskPriority | None = None
@@ -131,7 +135,7 @@ class AITaskPrioritizationResult(BaseModel):
 
 # --- Availability ---
 
-class SlotCreate(BaseModel):
+class SlotCreate(StrictInput):
     day_of_week: int = Field(ge=0, le=6, description="0 = Monday ... 6 = Sunday")
     specific_date: date | None = None
     start_time: time
@@ -147,7 +151,7 @@ class SlotCreate(BaseModel):
         return self
 
 
-class SlotUpdate(BaseModel):
+class SlotUpdate(StrictInput):
     day_of_week: int | None = Field(None, ge=0, le=6)
     specific_date: date | None = None
     start_time: time | None = None
@@ -174,8 +178,8 @@ class SlotRead(ORM):
 
 # --- Study blocks ---
 
-class StudyBlockCreate(BaseModel):
-    task_id: int
+class StudyBlockCreate(StrictInput):
+    task_id: int = Field(gt=0)
     start_at: AwareDatetime
     end_at: AwareDatetime
     status: BlockStatus = BlockStatus.PLANNED
@@ -187,8 +191,8 @@ class StudyBlockCreate(BaseModel):
         return self
 
 
-class StudyBlockUpdate(BaseModel):
-    task_id: int | None = None
+class StudyBlockUpdate(StrictInput):
+    task_id: int | None = Field(None, gt=0)
     start_at: AwareDatetime | None = None
     end_at: AwareDatetime | None = None
     status: BlockStatus | None = None

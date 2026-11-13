@@ -1,10 +1,11 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class BlockStatusUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     status: Literal["pending", "planned", "completed", "missed"]
 
 
