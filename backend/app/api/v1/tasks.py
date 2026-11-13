@@ -126,7 +126,7 @@ async def prioritize_tasks(
     except Exception as exc:
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY,
-            f"AI prioritization unavailable: {exc}",
+            "AI prioritization is currently unavailable. Please try again later.",
         ) from exc
 
     now = datetime.now(UTC)

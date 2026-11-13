@@ -71,7 +71,7 @@ app = FastAPI(
 
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from app.schemas.errors import ErrorResponse, FieldError
+from app.schemas.errors import ErrorDetail, ErrorResponse, FieldError
 
 def _status_to_code(status_code: int) -> str:
     codes = {
@@ -92,32 +92,31 @@ def _status_to_code(status_code: int) -> str:
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     field_errors: list[FieldError] = []
-    messages: list[str] = []
     for err in exc.errors():
         loc = err.get("loc", ())
         field_parts = [str(p) for p in loc if p != "body"]
         field_name = ".".join(field_parts) if field_parts else "request"
         msg = err.get("msg", "Invalid value")
         field_errors.append(FieldError(field=field_name, message=msg))
-        messages.append(f"{field_name}: {msg}")
 
-    summary = "; ".join(messages) if messages else "Request validation failed"
     error_data = ErrorResponse(
-        detail=summary,
-        error_code="VALIDATION_ERROR",
-        status_code=422,
-        field_errors=field_errors or None,
+        error=ErrorDetail(
+            code="VALIDATION_ERROR",
+            message="The request contains invalid or missing fields.",
+            details=field_errors or None,
+        )
     )
-    return JSONResponse(status_code=422, content=error_data.model_dump(exclude_none=True))
+    return JSONResponse(status_code=400, content=error_data.model_dump(exclude_none=True))
 
 
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
-    detail_str = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+    detail_str = exc.detail if isinstance(exc.detail, str) else "Request failed"
     error_data = ErrorResponse(
-        detail=detail_str,
-        error_code=_status_to_code(exc.status_code),
-        status_code=exc.status_code,
+        error=ErrorDetail(
+            code=_status_to_code(exc.status_code),
+            message=detail_str,
+        )
     )
     headers = getattr(exc, "headers", None)
     return JSONResponse(status_code=exc.status_code, content=error_data.model_dump(exclude_none=True), headers=headers)
@@ -141,9 +140,10 @@ async def monitor_requests(request: Request, call_next) -> Response:
         if request.url.path in ("/api/v1/schedule/generate", "/api/v1/schedule/rebalance", "/api/v1/tasks/prioritize"):
             monitoring.record_ai_failure(e)
         error_data = ErrorResponse(
-            detail="Internal Server Error",
-            error_code="INTERNAL_SERVER_ERROR",
-            status_code=500,
+            error=ErrorDetail(
+                code="INTERNAL_SERVER_ERROR",
+                message="An unexpected error occurred.",
+            )
         )
         response = JSONResponse(error_data.model_dump(exclude_none=True), status_code=500)
     monitoring.record_latency(time.perf_counter() - start)

@@ -329,7 +329,10 @@ async def _request_ai_schedule(
     except AI_PROVIDER_EXCEPTIONS as exc:
         monitoring.record_ai_failure(exc)
         label = "AI rebalancer" if rebalance else "AI scheduler"
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"{label} unavailable: {exc}") from exc
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            f"{label} is currently unavailable. Please try again later.",
+        ) from exc
 
 
 async def _delete_future_planned_blocks(
