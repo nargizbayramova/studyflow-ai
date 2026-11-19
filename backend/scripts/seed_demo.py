@@ -8,7 +8,7 @@ from app.models.task import Task, TaskType, TaskStatus, TaskPriority
 from app.models.study_block import StudyBlock, BlockStatus
 from app.models.availability import AvailabilitySlot, SlotKind
 
-TARGET_EMAIL = "murad.bayramov259@gmail.com"
+TARGET_EMAIL = "nbayramova12029@ada.edu.az"
 
 async def seed_data():
     async with SessionLocal() as db:
@@ -20,7 +20,7 @@ async def seed_data():
             user = User(
                 email=TARGET_EMAIL,
                 hashed_password=hash_password("12345678"),
-                full_name="Murad Bayramov",
+                full_name="Nargiz Bayramova",
                 is_active=True,
             )
             db.add(user)
