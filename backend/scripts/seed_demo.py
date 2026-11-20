@@ -402,19 +402,55 @@ async def _ensure_rbac_user(db, email: str, full_name: str, role: UserRole) -> U
 
 
 async def _seed_rbac_demo_accounts(db) -> None:
-    """Ensure User A, User B, and Admin exist with sample tasks for RBAC testing."""
-    user_a = await _ensure_rbac_user(db, "usera@studyflow.edu", "User A (Student)", UserRole.USER)
-    user_b = await _ensure_rbac_user(db, "userb@studyflow.edu", "User B (Student)", UserRole.USER)
-    await _ensure_rbac_user(db, "admin@studyflow.edu", "System Administrator", UserRole.ADMIN)
+    """Seed two contributor accounts (one regular user, one admin) with sample data."""
+    sumaya = await _ensure_rbac_user(
+        db, "sgafarova18004@ada.edu.az", "Sumaya Gafarova", UserRole.USER
+    )
+    maryam = await _ensure_rbac_user(
+        db, "maliyeva23162@ada.edu.az", "Maryam Aliyeva", UserRole.ADMIN
+    )
 
     now_dt = datetime.now(timezone.utc)
     samples = [
-        (user_a, "CS 101", "Intro to Software Engineering", "Homework 1: REST API Design", 2),
-        (user_a, "MATH 101", "Discrete Mathematics", "Problem Set 3: Graph Theory", 4),
-        (user_b, "BIO 101", "General Biology", "Lab Report 2: Cellular Respiration", 3),
-        (user_b, "HIST 202", "Modern World History", "Midterm Essay Outline", 5),
+        (
+            sumaya,
+            "CSCI 3509",
+            "Intro to Software Engineering",
+            "#5553B7",
+            "Homework 1: REST API Design",
+            TaskType.ASSIGNMENT,
+            TaskPriority.HIGH,
+            2,
+            3.0,
+            15.0,
+        ),
+        (
+            sumaya,
+            "MATH 2101",
+            "Discrete Mathematics",
+            "#428A86",
+            "Problem Set 3: Graph Theory",
+            TaskType.ASSIGNMENT,
+            TaskPriority.MEDIUM,
+            4,
+            2.5,
+            10.0,
+        ),
+        (
+            maryam,
+            "CSCI 4100",
+            "Human-Computer Interaction",
+            "#B87584",
+            "UI Prototype Usability Review",
+            TaskType.PROJECT_MILESTONE,
+            TaskPriority.MEDIUM,
+            5,
+            4.0,
+            20.0,
+        ),
     ]
-    for owner, code, course_title, task_title, due_days in samples:
+
+    for owner, code, course_title, color, task_title, ttype, prio, due_days, hrs, weight in samples:
         course = (
             await db.execute(
                 select(Course).where(
@@ -428,33 +464,78 @@ async def _seed_rbac_demo_accounts(db) -> None:
                 code=code,
                 title=course_title,
                 semester="Fall 2026",
-                color="#5553B7",
+                color=color,
             )
             db.add(course)
             await db.flush()
 
-        existing_task = (
+        task = (
             await db.execute(
                 select(Task).where(Task.user_id == owner.id, Task.title == task_title)
             )
         ).scalar_one_or_none()
-        if existing_task is None:
+        if task is None:
+            task = Task(
+                user_id=owner.id,
+                course_id=course.id,
+                title=task_title,
+                type=ttype,
+                status=TaskStatus.PENDING,
+                priority=prio,
+                due_date=now_dt + timedelta(days=due_days),
+                estimated_hours=hrs,
+                weight_percent=weight,
+            )
+            db.add(task)
+            await db.flush()
+
+        # Add one sample study block for Sumaya's first task if none exists
+        if owner.id == sumaya.id and code == "CSCI 3509":
+            has_block = (
+                await db.execute(select(StudyBlock).where(StudyBlock.task_id == task.id))
+            ).scalar_one_or_none()
+            if has_block is None:
+                db.add(
+                    StudyBlock(
+                        user_id=owner.id,
+                        task_id=task.id,
+                        start_at=now_dt + timedelta(days=1, hours=2),
+                        end_at=now_dt + timedelta(days=1, hours=4),
+                        status=BlockStatus.PLANNED,
+                    )
+                )
+
+    # Seed one availability slot per contributor if they have none yet
+    for owner, dow, st, et in [
+        (sumaya, 0, time(10, 0), time(13, 0)),
+        (sumaya, 2, time(14, 0), time(17, 0)),
+        (maryam, 1, time(9, 0), time(12, 0)),
+    ]:
+        existing_slot = (
+            await db.execute(
+                select(AvailabilitySlot).where(
+                    AvailabilitySlot.user_id == owner.id,
+                    AvailabilitySlot.day_of_week == dow,
+                    AvailabilitySlot.start_time == st,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_slot is None:
             db.add(
-                Task(
+                AvailabilitySlot(
                     user_id=owner.id,
-                    course_id=course.id,
-                    title=task_title,
-                    type=TaskType.ASSIGNMENT,
-                    status=TaskStatus.PENDING,
-                    priority=TaskPriority.MEDIUM,
-                    due_date=now_dt + timedelta(days=due_days),
-                    estimated_hours=2.0,
-                    weight_percent=10.0,
+                    day_of_week=dow,
+                    start_time=st,
+                    end_time=et,
+                    kind=SlotKind.AVAILABLE,
                 )
             )
 
     await db.commit()
-    print("Seeded RBAC demo accounts (usera@studyflow.edu, userb@studyflow.edu, admin@studyflow.edu / password123).")
+    print(
+        "Seeded contributor accounts: "
+        "sgafarova18004@ada.edu.az (user) and maliyeva23162@ada.edu.az (admin) / password123."
+    )
 
 if __name__ == "__main__":
     asyncio.run(seed_data())
