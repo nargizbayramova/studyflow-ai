@@ -15,7 +15,8 @@ academic-planner/
 ```bash
 cd backend
 cp .env.example .env
-docker compose up --build
+docker compose up --build -d
+docker compose exec backend python -m scripts.seed_demo # optional: seeds demo + RBAC test accounts
 ```
 
 - HTML Greeting: http://localhost:8000/api/v1/greeting
@@ -68,6 +69,7 @@ PYTHONPATH=. pytest -q
 ## Contributors & Git Shortlog
 
 See [`CONTRIBUTORS.md`](CONTRIBUTORS.md) for student IDs and team responsibilities:
+
 - **Nargiz Bayramova:** Backend REST API, PostgreSQL schema & migrations, RBAC, error/response envelopes, and monitoring/Telegram alerts.
 - **Maryam Aliyeva:** Frontend React/TypeScript UI/UX, interactive calendar & dashboard, and client state management.
 - **Sumaya Gafarova:** Project proposal, requirements engineering, AI scheduling & prioritization logic, and system architecture.
